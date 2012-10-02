@@ -37,10 +37,12 @@
 #include <unistd.h>
 #include <dlfcn.h>
 
+#include <glib-object.h>
 #include <pulse/pulseaudio.h>
 
 #define UNUSED __attribute__((unused))
 
+#undef CLAMP
 #define CLAMP(x, low, high) \
 	__extension__ ({ \
 		typeof(x) _x = (x); \
@@ -247,7 +249,7 @@ static int __attribute__((format (printf, 2, 3))) send_notification(const char *
 	libnotify->notification_set_timeout(notification, 1500);
 	libnotify->notification_set_hint_string(notification, "sychronous", "volume");
 	libnotify->notification_show(notification, NULL);
-	/* g_object_unref(G_OBJECT(notification)); */
+	g_object_unref(G_OBJECT(notification));
 
 	libnotify->uninit();
 	return nbytes;

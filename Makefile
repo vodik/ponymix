@@ -1,6 +1,6 @@
 CC = gcc -std=gnu99
-CFLAGS := -Wall -Wextra -pedantic -O2 -g -D_REENTRANT $(CFLAGS)
-LDLIBS := -lpulse -lm -ldl
+CFLAGS := -Wall -Wextra -pedantic -O2 -g -D_REENTRANT $(shell pkg-config --cflags gobject-2.0) $(CFLAGS)
+LDLIBS := -lpulse -lm -ldl $(shell pkg-config --libs gobject-2.0)
 
 ponymix: ponymix.o
 
