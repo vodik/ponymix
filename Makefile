@@ -1,6 +1,6 @@
 CC = gcc -std=gnu99
 CFLAGS := -Wall -Wextra -pedantic -O2 -g -D_REENTRANT $(CFLAGS)
-LDLIBS := -lpulse -lm
+LDLIBS := -lpulse -lm -ldl
 
 ponymix: ponymix.o
 

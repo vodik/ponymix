@@ -32,8 +32,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 #include <pulse/pulseaudio.h>
 
@@ -174,6 +176,98 @@ struct arg_t {
 	struct io_t *target;
 };
 
+struct libnotify_t {
+	void *handle;
+
+	void  (*init)(const char *);
+	void *(*notification_new)(const char *, const char *, const char *);
+	void  (*notification_set_timeout)(void *, int);
+	void  (*notification_set_hint_string)(void *, const char *, const char *);
+	void  (*notification_show)(void *, const char *);
+	void  (*uninit)();
+};
+
+static struct libnotify_t *libnotify;
+
+static int load_notify()
+{
+	void *handle = dlopen("libnotify.so", RTLD_LAZY);
+	if (!handle)
+		return -1;
+
+	libnotify = malloc(sizeof(*libnotify));
+	libnotify->handle = handle;
+
+	*(void **)(&libnotify->init) = dlsym(handle, "notify_init");
+	if (!libnotify->init)
+		goto cleanup;
+
+	*(void **)(&libnotify->notification_new) = dlsym(handle, "notify_notification_new");
+	if (!libnotify->notification_new)
+		goto cleanup;
+
+	*(void **)(&libnotify->notification_set_timeout) = dlsym(handle, "notify_notification_set_timeout");
+	if (!libnotify->notification_set_timeout)
+		goto cleanup;
+
+	*(void **)(&libnotify->notification_set_hint_string) = dlsym(handle, "notify_notification_set_hint_string");
+	if (!libnotify->notification_set_hint_string)
+		goto cleanup;
+
+	*(void **)(&libnotify->notification_show) = dlsym(handle, "notify_notification_show");
+	if (!libnotify->notification_show)
+		goto cleanup;
+
+	*(void **)(&libnotify->uninit) = dlsym(handle, "notify_uninit");
+	if (!libnotify->uninit)
+		goto cleanup;
+
+	return 0;
+
+cleanup:
+	dlclose(handle);
+	free(libnotify);
+	libnotify = NULL;
+	return -1;
+}
+
+static int __attribute__((format (printf, 2, 3))) send_notification(const char *icon, const char *fmt, ...)
+{
+	va_list ap;
+	char buf[1024];
+	int nbytes;
+
+	va_start(ap, fmt);
+	nbytes = vsnprintf(buf, 1024, fmt, ap);
+	va_end(ap);
+
+	libnotify->init("ponymix");
+
+	void *notification = libnotify->notification_new("ponymix", buf, icon);
+	libnotify->notification_set_timeout(notification, 1500);
+	libnotify->notification_set_hint_string(notification, "sychronous", "volume");
+	libnotify->notification_show(notification, NULL);
+	/* g_object_unref(G_OBJECT(notification)); */
+
+	libnotify->uninit();
+	return nbytes;
+}
+
+static void send_voladj_notification(int volume_percent)
+{
+	const char *icon = "dialog-information";
+
+	if (volume_percent > 67)
+		icon = "audio-volume-high-symbolic";
+	else if (volume_percent > 33)
+		icon = "audio-volume-medium-symbolic";
+	else if (volume_percent > 0)
+		icon = "audio-volume-low-symbolic";
+	else if (volume_percent == 0)
+		icon = "audio-volume-muted-symbolic";
+
+	send_notification(icon, "Volume at %d%%", volume_percent);
+}
 static int xstrtol(const char *str, long *out)
 {
 	char *end = NULL;
@@ -348,9 +442,11 @@ static int set_volume(struct pulseaudio_t *pulse, struct io_t *dev, long v)
 			success_cb, &success);
 	pulse_async_wait(pulse, op);
 
-	if (success)
+	if (success) {
 		printf("%ld\n", v);
-	else {
+		if (libnotify)
+			send_voladj_notification(v);
+	} else {
 		int err = pa_context_errno(pulse->cxt);
 		fprintf(stderr, "failed to set volume: %s\n", pa_strerror(err));
 	}
@@ -392,15 +488,17 @@ static int set_mute(struct pulseaudio_t *pulse, struct io_t *dev, int mute)
 	int success = 0;
 	pa_operation* op;
 
-	/* new effective volume */
-	printf("%d\n", mute ? 0 : dev->volume_percent);
-
 	op = dev->op.mute(pulse->cxt, dev->idx, mute,
 			success_cb, &success);
 
 	pulse_async_wait(pulse, op);
 
-	if (!success) {
+	if (success) {
+		int v = mute ? 0 : dev->volume_percent;
+		printf("%d\n", v);
+		if (libnotify)
+			send_voladj_notification(v);
+	} else {
 		int err = pa_context_errno(pulse->cxt);
 		fprintf(stderr, "failed to mute device: %s\n", pa_strerror(err));
 	}
@@ -827,13 +925,14 @@ int main(int argc, char *argv[])
 		{ "app", no_argument, 0, 'a' },
 		{ "device", no_argument, 0, 'd' },
 		{ "help", no_argument, 0, 'h' },
+		{ "notify", no_argument, 0, 'N' },
 		{ "sink", optional_argument, 0, 'o' },
 		{ "source", optional_argument, 0, 'i' },
 		{ 0, 0, 0, 0 },
 	};
 
 	for (;;) {
-		int opt = getopt_long(argc, argv, "adhi::o::", opts, NULL);
+		int opt = getopt_long(argc, argv, "adhi::No::", opts, NULL);
 		if (opt == -1)
 			break;
 
@@ -857,6 +956,10 @@ int main(int argc, char *argv[])
 			run.get_default = get_default_source;
 			run.get_by_name = get_source_by_name;
 			run.pp_name = "source";
+			break;
+		case 'N':
+			if (load_notify() < 0)
+				warnx("failed to load libnotify, notifications disabled");
 			break;
 		default:
 			return EXIT_FAILURE;
